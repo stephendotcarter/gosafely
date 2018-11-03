@@ -205,8 +205,6 @@ func (a *API) DownloadFile(pm PackageMetadata, p Package, f File) error {
 	defer outputFile.Close()
 
 	for i := 1; i <= f.Parts; i++ {
-		fmt.Printf("DownloadFilePart %d\n", i)
-
 		postParams := make(map[string]string, 3)
 		postParams["checksum"] = cs
 		postParams["part"] = strconv.Itoa(i)
