@@ -37,7 +37,15 @@ func main() {
 	fmt.Printf("Package Sender: %s\n", p.PackageSender)
 	fmt.Printf("Package Files:\n")
 	for i, f := range p.Files {
+		fp := "/tmp/" + f.FileName
+
 		fmt.Printf("%d: %s (%s)\n", i, f.FileName, f.FileSize)
-		api.DownloadFile(pm, p, f)
+		fmt.Printf("Downloading file to %s\n", fp)
+		err = api.DownloadFile(pm, p, f, fp)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+		fmt.Printf("Downloading complete!\n")
 	}
 }

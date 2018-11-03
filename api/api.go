@@ -182,9 +182,18 @@ func createChecksum(keyCode string, packageCode string) string {
 	return fmt.Sprintf("%x", key)
 }
 
-func (a *API) DownloadFile(pm PackageMetadata, p Package, f File) error {
+func (a *API) DownloadFile(pm PackageMetadata, p Package, f File, fp string) error {
 	method := "POST"
 	path := "/package/" + p.PackageID + "/file/" + f.FileID + "/download/"
+
+	if _, err := os.Stat(fp); !os.IsNotExist(err) {
+		return fmt.Errorf("File exists")
+	}
+	fh, err := os.OpenFile(fp, os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
 
 	password := []byte(p.ServerSecret + pm.KeyCode)
 	cs := createChecksum(pm.KeyCode, p.PackageCode)
@@ -197,12 +206,6 @@ func (a *API) DownloadFile(pm PackageMetadata, p Package, f File) error {
 		failed = true
 		return password, nil
 	}
-
-	outputFile, err := os.OpenFile("/tmp/"+f.FileName, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-	if err != nil {
-		return err
-	}
-	defer outputFile.Close()
 
 	for i := 1; i <= f.Parts; i++ {
 		postParams := make(map[string]string, 3)
@@ -227,7 +230,7 @@ func (a *API) DownloadFile(pm PackageMetadata, p Package, f File) error {
 			return err
 		}
 
-		_, err = io.Copy(outputFile, md.UnverifiedBody)
+		_, err = io.Copy(fh, md.UnverifiedBody)
 		if err != nil {
 			return err
 		}
