@@ -102,8 +102,8 @@ type File struct {
 }
 
 type PackageMetadata struct {
-	PackageCode string
 	Thread      string
+	PackageCode string
 	KeyCode     string
 }
 
@@ -272,7 +272,26 @@ func (a *API) GetPackageMetadataFromURL(packageURL string) (PackageMetadata, err
 
 	pm.PackageCode = q.Get("packageCode")
 	pm.Thread = q.Get("thread")
-	pm.KeyCode = q.Get("keyCode")
+	pm.KeyCode = ""
+
+	// packageURL = "https://files.test.com/receive/?thread=ABCD-EFGH&packageCode=11dd22ee33ff#keyCode=55aa66bb77cc
+	p := strings.Split(packageURL, "#")
+	// p = "https://files.test.com/receive/?thread=ABCD-EFGH&packageCode=11dd22ee33ff"
+	//     "keyCode=55aa66bb77cc"
+	if len(p) == 2 {
+		p := strings.Split(p[1], "=")
+		// p = "keyCode"
+		//     "55aa66bb77cc"
+		if len(p) == 2 {
+			if p[0] == "keyCode" {
+				pm.KeyCode = p[1]
+			}
+		}
+	}
+
+	if pm.PackageCode == "" || pm.Thread == "" || pm.KeyCode == "" {
+		return PackageMetadata{"", "", ""}, fmt.Errorf("Could not find packageCode, thread or keyCode in URL")
+	}
 
 	return pm, nil
 }

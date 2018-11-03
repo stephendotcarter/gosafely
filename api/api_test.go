@@ -114,3 +114,28 @@ func TestAddCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestGetPackageMetadataFromURL(t *testing.T) {
+	tables := []struct {
+		URL      string
+		expected PackageMetadata
+		err      string
+	}{
+		{"https://files.test.com/receive/?thread=ABCD-EFGH&packageCode=11aa22bb33cc#keyCode=dd44ee55ff66", PackageMetadata{"ABCD-EFGH", "11aa22bb33cc", "dd44ee55ff66"}, ""},
+		{"https://files.test.com/receive/?thread=ABCD-EFGH&packageode=11aa22bb33cc#keyCode=dd44ee55ff66fakeparam=fakevalue", PackageMetadata{"", "", ""}, "Could not find packageCode, thread or keyCode in URL"},
+		{"https://files.test.com/receive/?thread=ABCD-EFGH&packageCode=11aa22bb33cc#keyCode=dd44ee55ff66#fakeparam=fakevalue", PackageMetadata{"", "", ""}, "Could not find packageCode, thread or keyCode in URL"},
+	}
+
+	a := NewAPI("host", "key", "secret")
+
+	for _, table := range tables {
+		value, err := a.GetPackageMetadataFromURL(table.URL)
+		errString := ""
+		if err != nil {
+			errString = err.Error()
+		}
+		if value != table.expected || errString != table.err {
+			t.Errorf("GetPackageMetadataFromURL was incorrect, got: (\"%s\", \"%s\"), want: (\"%s\", \"%s\").", value, err, table.expected, table.err)
+		}
+	}
+}
