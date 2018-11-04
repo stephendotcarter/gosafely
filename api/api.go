@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/dchest/pbkdf2"
+	humanize "github.com/dustin/go-humanize"
 	"golang.org/x/crypto/openpgp"
 )
 
@@ -99,6 +100,15 @@ type File struct {
 	FileUploadedStr string `json:"fileUploadedStr"`
 	FileVersion     string `json:"fileVersion"`
 	CreatedByEmail  string `json:"createdByEmail"`
+}
+
+func (f *File) FileSizeInt() uint64 {
+	i, _ := strconv.Atoi(f.FileSize)
+	return uint64(i)
+}
+
+func (f *File) FileSizeHumanize() string {
+	return humanize.Bytes(f.FileSizeInt())
 }
 
 type PackageMetadata struct {
