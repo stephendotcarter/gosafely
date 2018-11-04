@@ -90,6 +90,12 @@ func getDownloadIndices(fc int) ([]int64, error) {
 		return nil
 	}
 
+	// Default all files selected
+	selectedDefault := []string{}
+	for i := 0; i < fc; i++ {
+		selectedDefault = append(selectedDefault, strconv.Itoa(i))
+	}
+
 	prompt := promptui.Prompt{
 		Label:    "Files",
 		Validate: validate,
