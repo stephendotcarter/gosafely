@@ -91,6 +91,12 @@ type Package struct {
 	Response         string        `json:"response"`
 }
 
+type PackageMetadata struct {
+	Thread      string
+	PackageCode string
+	KeyCode     string
+}
+
 type File struct {
 	FileID          string `json:"fileId"`
 	FileName        string `json:"fileName"`
@@ -111,10 +117,17 @@ func (f *File) FileSizeHumanize() string {
 	return humanize.Bytes(f.FileSizeInt())
 }
 
-type PackageMetadata struct {
-	Thread      string
-	PackageCode string
-	KeyCode     string
+type writeCounter struct {
+	Current  uint64
+	Total    uint64
+	Progress func(uint64, uint64)
+}
+
+func (wc *writeCounter) Write(p []byte) (int, error) {
+	n := len(p)
+	wc.Current += uint64(n)
+	wc.Progress(wc.Current, wc.Total)
+	return n, nil
 }
 
 func NewAPI(Host string, APIKey string, APISecret string) *API {
@@ -192,7 +205,7 @@ func createChecksum(keyCode string, packageCode string) string {
 	return fmt.Sprintf("%x", key)
 }
 
-func (a *API) DownloadFile(pm PackageMetadata, p Package, f File, fp string) error {
+func (a *API) DownloadFile(pm PackageMetadata, p Package, f File, fp string, progress func(uint64, uint64)) error {
 	method := "POST"
 	path := "/package/" + p.PackageID + "/file/" + f.FileID + "/download/"
 
@@ -215,6 +228,12 @@ func (a *API) DownloadFile(pm PackageMetadata, p Package, f File, fp string) err
 		}
 		failed = true
 		return password, nil
+	}
+
+	counter := &writeCounter{
+		0,
+		f.FileSizeInt(),
+		progress,
 	}
 
 	for i := 1; i <= f.Parts; i++ {
@@ -240,7 +259,7 @@ func (a *API) DownloadFile(pm PackageMetadata, p Package, f File, fp string) err
 			return err
 		}
 
-		_, err = io.Copy(fh, md.UnverifiedBody)
+		_, err = io.Copy(fh, io.TeeReader(md.UnverifiedBody, counter))
 		if err != nil {
 			return err
 		}
@@ -343,3 +362,10 @@ func (a *API) GetPackageFromURL(packageURL string) (Package, error) {
 
 	return p, nil
 }
+
+func ProgressPrintBytes(current uint64, total uint64) {
+	fmt.Printf("\r%s", strings.Repeat(" ", 35))
+	fmt.Printf("\r%s/%s", humanize.Bytes(current), humanize.Bytes(total))
+}
+
+func ProgressNone(current uint64, total uint64) {}
