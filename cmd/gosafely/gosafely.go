@@ -99,6 +99,10 @@ func getDownloadIndices(fc int) ([]int64, error) {
 	prompt := promptui.Prompt{
 		Label:    "Files",
 		Validate: validate,
+		Templates: &promptui.PromptTemplates{
+			Success: "{{ . | faint }} ",
+		},
+		Default: strings.Join(selectedDefault, ","),
 	}
 	result, err := prompt.Run()
 
