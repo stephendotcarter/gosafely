@@ -3,13 +3,37 @@ Go Client API for SendSafely
 
 ## Install
 
-```
-go install github.com/stephendotcarter/gosafely/cmd/gosafely
-```
+
+1. Download the required release:
+   - https://github.com/stephendotcarter/gosafely/releases
+1. Make the `gosafely` binary executable and move it to your `PATH`:
+   ```
+   chmod +x ./gosafely-darwin
+   sudo mv ./gosafely-darwin /usr/local/bin/gosafely
+   ```
+1. You should now be able to use `gosafely`:
+   ```
+   gosafely
+   gosafely is a CLI for SendSafely
+   
+   Usage:
+     gosafely [command]
+   
+   Available Commands:
+     download    Download the files in a package
+     help        Help about any command
+     list        List the files in a package
+     version     Print the version number of gosafely
+   
+   Flags:
+     -h, --help   help for gosafely
+   
+   Use "gosafely [command] --help" for more information about a command.
+   ```
 
 ## Configure
 
-Export the following variables:
+Add the following variables to your `~/.bash_profile`:
 
 ```
 export SS_API_URL='MY_SENDSAFELY_URL'
