@@ -40,6 +40,7 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List the files in a package",
 	Run: func(cmd *cobra.Command, args []string) {
+		checkEnvVars()
 		p, _, err := getPackage(ssURL)
 		if err != nil {
 			fmt.Println(err)
@@ -53,6 +54,7 @@ var downloadCmd = &cobra.Command{
 	Use:   "download",
 	Short: "Download the files in a package",
 	Run: func(cmd *cobra.Command, args []string) {
+		checkEnvVars()
 
 		p, pm, err := getPackage(ssURL)
 		if err != nil {
@@ -171,11 +173,14 @@ func printFiles(files []gosafely.File) {
 	table.Render()
 }
 
-func init() {
+func checkEnvVars() {
 	if apiURL == "" || apiKeyID == "" || apiKeySecret == "" {
 		fmt.Println("SS_API_URL, SS_API_KEY_ID and SS_API_KEY_SECRET environment variables required")
 		os.Exit(1)
 	}
+}
+
+func init() {
 
 	ssAPI = gosafely.NewAPI(apiURL, apiKeyID, apiKeySecret)
 
