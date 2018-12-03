@@ -47,7 +47,7 @@ export SS_API_KEY_SECRET='MY_SENDSAFELY_SECRET'
 
 - Show files for a given URL:
   ```
-  gosafely list -u https://sendsafely.test.com/receive/?thread=ABCD-EFGH&packageCode=11aa22bb33cc#keyCode=dd44ee55ff66
+  gosafely list -u "https://sendsafely.test.com/receive/?thread=ABCD-EFGH&packageCode=11aa22bb33cc#keyCode=dd44ee55ff66"
 
   Package | 11aa22bb33cc
   Sent by | user1@test.com
@@ -62,7 +62,7 @@ export SS_API_KEY_SECRET='MY_SENDSAFELY_SECRET'
 - Download files for a given URL:
 
   ```
-  $ gosafely download -u https://sendsafely.test.com/receive/?thread=ABCD-EFGH&packageCode=11aa22bb33cc#keyCode=dd44ee55ff66
+  $ gosafely download -u "https://sendsafely.test.com/receive/?thread=ABCD-EFGH&packageCode=11aa22bb33cc#keyCode=dd44ee55ff66"
 
   Package | 11aa22bb33cc
   Sent by | user1@test.com
@@ -86,3 +86,8 @@ export SS_API_KEY_SECRET='MY_SENDSAFELY_SECRET'
   total 4.9M
   -rw-r--r-- 1 stephen stephen 4.9M Nov  4 22:51 5mb.dat
   ```
+
+## Additional Information
+
+- The package URL needs to be wrapped in doublequotes otherwise BASH will think the # is a comment.
+- In the above example, `SS_API_URL` would be `https://sendsafely.test.com`.
