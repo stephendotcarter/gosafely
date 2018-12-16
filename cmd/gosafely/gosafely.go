@@ -21,6 +21,8 @@ var (
 	apiKeySecret = os.Getenv("SS_API_KEY_SECRET")
 	ssAPI        *gosafely.API
 	ssURL        string
+	bashComp     bool
+	zshComp      bool
 )
 
 var rootCmd = &cobra.Command{
@@ -33,6 +35,26 @@ var versionCmd = &cobra.Command{
 	Short: "Print the version number of gosafely",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("%s\n", version)
+	},
+}
+
+var completionCmd = &cobra.Command{
+	Use:   "completion",
+	Short: "generates bash completion file",
+	Long: `Save the output to a file in your bash or zsh completions folder named "gosafely_completion.bash"
+(Default bash completion folder is /etc/bash_completion.d)
+
+Or add:
+
+eval "$(gosafely completion)" to your .bashrc
+or 
+eval "$(gosafely completion --zsh)" to .zshrc if using zsh`,
+	Run: func(cmd *cobra.Command, args []string) {
+		if zshComp {
+			rootCmd.GenZshCompletion(os.Stdout)
+		} else {
+			rootCmd.GenBashCompletion(os.Stdout)
+		}
 	},
 }
 
@@ -185,7 +207,9 @@ func init() {
 	ssAPI = gosafely.NewAPI(apiURL, apiKeyID, apiKeySecret)
 
 	rootCmd.AddCommand(versionCmd)
-
+	completionCmd.Flags().BoolVar(&bashComp, "bash",true, "Bash Completion script")
+	completionCmd.Flags().BoolVar(&zshComp, "zsh", false,"Zsh completion script")
+	rootCmd.AddCommand(completionCmd)
 	listCmd.Flags().StringVarP(&ssURL, "url", "u", "", "SendSafely URL to query")
 	listCmd.MarkFlagRequired("url")
 	rootCmd.AddCommand(listCmd)
