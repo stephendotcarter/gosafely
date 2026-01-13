@@ -9,8 +9,8 @@ import (
 
 	"github.com/manifoldco/promptui"
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
-
 	gosafely "github.com/stephendotcarter/gosafely/api"
 )
 
@@ -148,11 +148,14 @@ func getPackage(packageURL string) (gosafely.Package, gosafely.PackageMetadata, 
 
 func printPackage(p gosafely.Package) {
 	fmt.Println("")
-	table := tablewriter.NewWriter(os.Stdout)
+	table := tablewriter.NewTable(os.Stdout,
+		tablewriter.WithRendition(tw.Rendition{
+			Borders: tw.Border{Left: tw.Off, Right: tw.Off, Top: tw.Off, Bottom: tw.Off},
+		}),
+	)
 	table.Append([]string{"Package", p.PackageCode})
 	table.Append([]string{"Sent by", p.PackageSender})
 	table.Append([]string{"Sent on", p.PackageTimestamp})
-	table.SetBorder(false)
 	table.Render()
 	fmt.Println("")
 
@@ -160,8 +163,9 @@ func printPackage(p gosafely.Package) {
 }
 
 func printFiles(files []gosafely.File) {
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"#", "Uploaded", "Size", "File Name"})
+	table := tablewriter.NewTable(os.Stdout,
+		tablewriter.WithHeader([]string{"#", "Uploaded", "Size", "File Name"}),
+	)
 	for i, v := range files {
 		table.Append([]string{
 			strconv.Itoa(i),

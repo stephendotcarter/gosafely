@@ -3,6 +3,13 @@ Go Client API for SendSafely
 
 ## Install
 
+### Using Go (recommended)
+
+```bash
+go install github.com/stephendotcarter/gosafely/cmd/gosafely@latest
+```
+
+### From release binaries
 
 1. Download the required release:
    - https://github.com/stephendotcarter/gosafely/releases
