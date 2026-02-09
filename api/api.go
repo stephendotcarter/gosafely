@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,13 +14,16 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/dchest/pbkdf2"
 	humanize "github.com/dustin/go-humanize"
 	"golang.org/x/crypto/openpgp"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -33,9 +37,17 @@ var (
 )
 
 type API struct {
-	host      string
-	apiKey    string
-	apiSecret string
+	host        string
+	apiKey      string
+	apiSecret   string
+	concurrency int // number of concurrent part downloads; 0 or 1 = sequential
+}
+
+// SetConcurrency sets the number of concurrent part downloads.
+// When concurrency is 0 or 1, downloads are sequential.
+// When concurrency > 1, parts are downloaded in parallel.
+func (a *API) SetConcurrency(n int) {
+	a.concurrency = n
 }
 
 type UserInformation struct {
@@ -145,13 +157,17 @@ func computeHmac256(secret string, data string) string {
 	return strings.ToUpper(hex.EncodeToString(h.Sum(nil)))
 }
 
-func createSignature(APIKey string, APISecret string, URL string, dateString string, data string) string {
+func createSignature(
+	APIKey string, APISecret string, URL string, dateString string, data string,
+) string {
 	content := APIKey + URL + dateString + data
 	hash := computeHmac256(APISecret, content)
 	return hash
 }
 
-func addCredentials(APIKey string, APISecret string, req *http.Request, URL string, data []byte, date time.Time) {
+func addCredentials(
+	APIKey string, APISecret string, req *http.Request, URL string, data []byte, date time.Time,
+) {
 	dateString := getDateString(date)
 	signature := createSignature(APIKey, APISecret, URL, dateString, string(data))
 	req.Header.Add(APIKeyHeader, APIKey)
@@ -164,7 +180,9 @@ func getDateString(date time.Time) string {
 	return fmt.Sprintf("%s%s", d[:len(d)-1], "+0000")
 }
 
-func (a *API) makeRequest(endpointURL string, method string, data []byte, stream bool) (*http.Request, error) {
+func (a *API) makeRequest(
+	endpointURL string, method string, data []byte, stream bool,
+) (*http.Request, error) {
 	endpointURL = URLAPIPrefix + endpointURL
 	fullURL := a.host + endpointURL
 
@@ -180,7 +198,9 @@ func (a *API) makeRequest(endpointURL string, method string, data []byte, stream
 	return req, nil
 }
 
-func (a *API) sendRequest(endpointURL string, method string, data []byte, stream bool) (io.Reader, error) {
+func (a *API) sendRequest(
+	endpointURL string, method string, data []byte, stream bool,
+) (io.Reader, error) {
 	req, err := a.makeRequest(endpointURL, method, data, stream)
 	if err != nil {
 		return nil, err
@@ -205,13 +225,26 @@ func createChecksum(keyCode string, packageCode string) string {
 	return fmt.Sprintf("%x", key)
 }
 
-func (a *API) DownloadFile(pm PackageMetadata, p Package, f File, fp string, progress func(uint64, uint64)) error {
-	method := "POST"
-	path := "/package/" + p.PackageID + "/file/" + f.FileID + "/download/"
-
+func (a *API) DownloadFile(
+	pm PackageMetadata, p Package, f File, fp string, progress func(uint64, uint64),
+) error {
 	if _, err := os.Stat(fp); !os.IsNotExist(err) {
 		return fmt.Errorf("File exists")
 	}
+
+	if a.concurrency <= 1 {
+		return a.downloadFileSequential(pm, p, f, fp, progress)
+	}
+	return a.downloadFileConcurrent(pm, p, f, fp, progress)
+}
+
+// downloadFileSequential downloads file parts one at a time.
+func (a *API) downloadFileSequential(
+	pm PackageMetadata, p Package, f File, fp string, progress func(uint64, uint64),
+) error {
+	method := "POST"
+	path := "/package/" + p.PackageID + "/file/" + f.FileID + "/download/"
+
 	fh, err := os.OpenFile(fp, os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return err
@@ -265,6 +298,168 @@ func (a *API) DownloadFile(pm PackageMetadata, p Package, f File, fp string, pro
 		}
 	}
 	return nil
+}
+
+// downloadFileConcurrent downloads file parts concurrently using a worker pool.
+func (a *API) downloadFileConcurrent(
+	pm PackageMetadata, p Package, f File, fp string, progress func(uint64, uint64),
+) error {
+	method := "POST"
+	path := "/package/" + p.PackageID + "/file/" + f.FileID + "/download/"
+
+	password := []byte(p.ServerSecret + pm.KeyCode)
+	cs := createChecksum(pm.KeyCode, p.PackageCode)
+
+	// Generate temp file paths for each part
+	dir := filepath.Dir(fp)
+	base := filepath.Base(fp)
+	tempFiles := make([]string, f.Parts)
+	for i := 0; i < f.Parts; i++ {
+		tempFiles[i] = filepath.Join(dir, fmt.Sprintf("%s.part%d.tmp", base, i+1))
+	}
+
+	// Cleanup function to remove temp files
+	cleanup := func() {
+		for _, tf := range tempFiles {
+			os.Remove(tf)
+		}
+	}
+
+	// Track progress atomically
+	var downloaded uint64
+	total := f.FileSizeInt()
+
+	// Use errgroup for concurrent downloads with cancellation
+	g, ctx := errgroup.WithContext(context.Background())
+
+	// Semaphore to limit concurrency
+	sem := make(chan struct{}, a.concurrency)
+
+	for i := 1; i <= f.Parts; i++ {
+		partNum := i
+		tempFile := tempFiles[i-1]
+
+		g.Go(func() error {
+			// Acquire semaphore
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			defer func() { <-sem }()
+
+			// Check if context was cancelled
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			// Download and decrypt part
+			err := a.downloadPart(path, method, cs, partNum, password, tempFile, func(n uint64) {
+				current := atomic.AddUint64(&downloaded, n)
+				progress(current, total)
+			})
+			if err != nil {
+				return fmt.Errorf("part %d: %w", partNum, err)
+			}
+			return nil
+		})
+	}
+
+	// Wait for all downloads to complete
+	if err := g.Wait(); err != nil {
+		cleanup()
+		return err
+	}
+
+	// Assemble parts into final file
+	fh, err := os.OpenFile(fp, os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		cleanup()
+		return err
+	}
+	defer fh.Close()
+
+	for _, tempFile := range tempFiles {
+		tf, err := os.Open(tempFile)
+		if err != nil {
+			cleanup()
+			return err
+		}
+		_, err = io.Copy(fh, tf)
+		tf.Close()
+		if err != nil {
+			cleanup()
+			return err
+		}
+	}
+
+	// Cleanup temp files after successful assembly
+	cleanup()
+	return nil
+}
+
+// downloadPart downloads and decrypts a single part to a temp file.
+func (a *API) downloadPart(
+	path, method, checksum string,
+	partNum int,
+	password []byte,
+	tempFile string,
+	onProgress func(uint64),
+) error {
+	postParams := map[string]string{
+		"checksum": checksum,
+		"part":     strconv.Itoa(partNum),
+		"api":      "JAVA_API",
+	}
+
+	pp, err := json.Marshal(postParams)
+	if err != nil {
+		return err
+	}
+
+	r, err := a.sendRequest(path, method, pp, false)
+	if err != nil {
+		return err
+	}
+
+	failed := false
+	prompt := func(keys []openpgp.Key, symmetric bool) ([]byte, error) {
+		if failed {
+			return nil, errors.New("decryption failed")
+		}
+		failed = true
+		return password, nil
+	}
+
+	md, err := openpgp.ReadMessage(r, nil, prompt, nil)
+	if err != nil {
+		return err
+	}
+
+	fh, err := os.OpenFile(tempFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+
+	// Wrap with progress tracking
+	pr := &progressReader{r: md.UnverifiedBody, onProgress: onProgress}
+	_, err = io.Copy(fh, pr)
+	return err
+}
+
+// progressReader wraps a reader and calls onProgress with bytes read.
+type progressReader struct {
+	r          io.Reader
+	onProgress func(uint64)
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.r.Read(p)
+	if n > 0 {
+		pr.onProgress(uint64(n))
+	}
+	return n, err
 }
 
 func (a *API) UserInformation() (UserInformation, error) {

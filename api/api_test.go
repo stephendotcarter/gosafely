@@ -2,10 +2,106 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/openpgp"
 )
+
+// encryptTestData encrypts data with password using PGP symmetric encryption.
+func encryptTestData(data []byte, password string) ([]byte, error) {
+	var buf bytes.Buffer
+	w, err := openpgp.SymmetricallyEncrypt(&buf, []byte(password), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	_, err = w.Write(data)
+	if err != nil {
+		return nil, err
+	}
+	err = w.Close()
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// mockServerConfig configures the mock download server.
+type mockServerConfig struct {
+	parts      [][]byte      // encrypted data for each part
+	delay      time.Duration // delay per request
+	failOnPart int           // return error on this part (1-indexed, 0 = no failure)
+}
+
+// newMockDownloadServer creates a test server that handles download requests.
+// It returns the server and the password used for encryption.
+func newMockDownloadServer(cfg mockServerConfig) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cfg.delay > 0 {
+			time.Sleep(cfg.delay)
+		}
+
+		// Parse request body to get part number
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		var params struct {
+			Part string `json:"part"`
+		}
+		if err := json.Unmarshal(body, &params); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+
+		var partNum int
+		fmt.Sscanf(params.Part, "%d", &partNum)
+
+		if partNum < 1 || partNum > len(cfg.parts) {
+			http.Error(w, "invalid part", http.StatusBadRequest)
+			return
+		}
+
+		// Simulate failure on specific part
+		if cfg.failOnPart == partNum {
+			http.Error(w, "simulated error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write(cfg.parts[partNum-1])
+	}))
+}
+
+// generateTestParts creates encrypted test data for each part.
+func generateTestParts(numParts, partSize int, password string) ([][]byte, []byte, error) {
+	var allData []byte
+	parts := make([][]byte, numParts)
+
+	for i := 0; i < numParts; i++ {
+		// Generate deterministic data for each part
+		data := bytes.Repeat([]byte{byte(i)}, partSize)
+		allData = append(allData, data...)
+
+		encrypted, err := encryptTestData(data, password)
+		if err != nil {
+			return nil, nil, err
+		}
+		parts[i] = encrypted
+	}
+
+	return parts, allData, nil
+}
 
 func TestComputeHmac256(t *testing.T) {
 	tables := []struct {
@@ -136,6 +232,231 @@ func TestGetPackageMetadataFromURL(t *testing.T) {
 		}
 		if value != table.expected || errString != table.err {
 			t.Errorf("GetPackageMetadataFromURL was incorrect, got: (\"%s\", \"%s\"), want: (\"%s\", \"%s\").", value, err, table.expected, table.err)
+		}
+	}
+}
+
+func TestDownloadFile(t *testing.T) {
+	// Password = ServerSecret + KeyCode
+	const testServerSecret = "test-server-secret"
+	const testKeyCode = "test-key-code"
+	const testPassword = testServerSecret + testKeyCode
+
+	tests := []struct {
+		name           string
+		parts          int
+		partSize       int
+		concurrency    int
+		failOnPart     int
+		wantErr        bool
+		checkTempFiles bool
+	}{
+		{
+			name:        "sequential single part",
+			parts:       1,
+			partSize:    1024,
+			concurrency: 0,
+		},
+		{
+			name:        "sequential multi part",
+			parts:       4,
+			partSize:    1024,
+			concurrency: 0,
+		},
+		{
+			name:        "concurrent multi part",
+			parts:       8,
+			partSize:    1024,
+			concurrency: 4,
+		},
+		{
+			name:           "temp files cleaned on success",
+			parts:          4,
+			partSize:       1024,
+			concurrency:    4,
+			checkTempFiles: true,
+		},
+		{
+			name:           "temp files cleaned on error",
+			parts:          4,
+			partSize:       1024,
+			concurrency:    4,
+			failOnPart:     2,
+			wantErr:        true,
+			checkTempFiles: true,
+		},
+		{
+			name:        "error propagates correctly",
+			parts:       4,
+			partSize:    1024,
+			concurrency: 4,
+			failOnPart:  3,
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Generate test data
+			parts, expectedData, err := generateTestParts(tt.parts, tt.partSize, testPassword)
+			if err != nil {
+				t.Fatalf("failed to generate test parts: %v", err)
+			}
+
+			// Start mock server
+			server := newMockDownloadServer(mockServerConfig{
+				parts:      parts,
+				failOnPart: tt.failOnPart,
+			})
+			defer server.Close()
+
+			// Create API pointing to mock server
+			api := &API{
+				host:        server.URL,
+				concurrency: tt.concurrency,
+			}
+
+			// Create temp directory for output
+			tmpDir, err := ioutil.TempDir("", "download-test")
+			if err != nil {
+				t.Fatalf("failed to create temp dir: %v", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			outputFile := filepath.Join(tmpDir, "output.bin")
+
+			// Create test metadata
+			pm := PackageMetadata{
+				KeyCode:     testKeyCode,
+				PackageCode: "test-package",
+			}
+			pkg := Package{
+				PackageID:    "test-pkg-id",
+				ServerSecret: testServerSecret,
+			}
+
+			file := File{
+				FileID:   "test-file-id",
+				Parts:    tt.parts,
+				FileSize: fmt.Sprintf("%d", tt.parts*tt.partSize),
+			}
+
+			// Call DownloadFile
+			err = api.DownloadFile(pm, pkg, file, outputFile, ProgressNone)
+
+			// Check error expectation
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error but got none")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+
+				// Verify file content
+				content, err := ioutil.ReadFile(outputFile)
+				if err != nil {
+					t.Fatalf("failed to read output file: %v", err)
+				}
+				if !bytes.Equal(content, expectedData) {
+					t.Errorf("file content mismatch: got %d bytes, want %d bytes", len(content), len(expectedData))
+				}
+			}
+
+			// Check temp files are cleaned up
+			if tt.checkTempFiles {
+				files, _ := filepath.Glob(filepath.Join(tmpDir, "*.tmp"))
+				if len(files) > 0 {
+					t.Errorf("temp files not cleaned up: %v", files)
+				}
+			}
+		})
+	}
+}
+
+func TestDownloadFileProgress(t *testing.T) {
+	// Password = ServerSecret + KeyCode
+	const testServerSecret = "test-server-secret"
+	const testKeyCode = "test-key-code"
+	const testPassword = testServerSecret + testKeyCode
+	const numParts = 4
+	const partSize = 1024
+
+	// Generate test data
+	parts, _, err := generateTestParts(numParts, partSize, testPassword)
+	if err != nil {
+		t.Fatalf("failed to generate test parts: %v", err)
+	}
+
+	// Start mock server
+	server := newMockDownloadServer(mockServerConfig{
+		parts: parts,
+	})
+	defer server.Close()
+
+	// Create API with concurrency
+	api := &API{
+		host:        server.URL,
+		concurrency: 4,
+	}
+
+	// Create temp directory for output
+	tmpDir, err := ioutil.TempDir("", "download-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	outputFile := filepath.Join(tmpDir, "output.bin")
+
+	// Track progress calls
+	var mu sync.Mutex
+	var progressCalls []uint64
+
+	progressFn := func(current, total uint64) {
+		mu.Lock()
+		progressCalls = append(progressCalls, current)
+		mu.Unlock()
+	}
+
+	// Create test metadata
+	pm := PackageMetadata{
+		KeyCode: testKeyCode,
+	}
+	pkg := Package{
+		PackageID:    "test-pkg-id",
+		ServerSecret: testServerSecret,
+	}
+	file := File{
+		FileID:   "test-file-id",
+		Parts:    numParts,
+		FileSize: fmt.Sprintf("%d", numParts*partSize),
+	}
+
+	// Call DownloadFile
+	err = api.DownloadFile(pm, pkg, file, outputFile, progressFn)
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+
+	// Verify progress was reported
+	if len(progressCalls) == 0 {
+		t.Error("progress callback was never called")
+	}
+
+	// Verify final progress equals total size
+	expectedTotal := uint64(numParts * partSize)
+	finalProgress := progressCalls[len(progressCalls)-1]
+	if finalProgress != expectedTotal {
+		t.Errorf("final progress %d != expected total %d", finalProgress, expectedTotal)
+	}
+
+	// Verify progress is monotonically increasing (for sequential) or at least reaches total (for concurrent)
+	// For concurrent, values may not be strictly increasing due to race, but should all be <= total
+	for _, p := range progressCalls {
+		if p > expectedTotal {
+			t.Errorf("progress %d exceeds total %d", p, expectedTotal)
 		}
 	}
 }
